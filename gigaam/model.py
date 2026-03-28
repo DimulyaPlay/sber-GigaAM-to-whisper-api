@@ -101,6 +101,20 @@ class GigaAMASR(GigaAM):
         encoded, encoded_len = self.forward(wav, length)
         return self.decoding.decode(self.head, encoded, encoded_len)[0]
 
+    @torch.inference_mode()
+    def transcribe_tensor(self, wav: Tensor) -> str:
+        if wav.ndim == 1:
+            wav = wav.unsqueeze(0)
+
+        length = torch.full([1], wav.shape[-1], device=self._device)
+        wav = wav.to(self._device).to(self._dtype)
+
+        if length.item() > LONGFORM_THRESHOLD:
+            raise ValueError("Too long audio chunk, split it before transcribe_tensor().")
+
+        encoded, encoded_len = self.forward(wav, length)
+        return self.decoding.decode(self.head, encoded, encoded_len)[0]
+
     def forward_for_export(self, features: Tensor, feature_lengths: Tensor) -> Tensor:
         """
         Encoder-decoder forward to save model entirely in onnx format.
