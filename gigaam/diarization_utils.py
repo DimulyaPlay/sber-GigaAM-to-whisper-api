@@ -23,7 +23,7 @@ def resolve_local_pipeline_path(repo_id: str) -> str:
 
 def get_diarization_pipeline(
     device: torch.device,
-    model_id: str = "pyannote/speaker-diarization-3.1",
+    model_id: str = "pyannote/speaker-diarization-community-1",
 ):
     global _PIPELINE
     if _PIPELINE is not None:
@@ -36,7 +36,7 @@ def get_diarization_pipeline(
 def diarize_audio(
     wav_file: str,
     device: torch.device,
-    model_id: str = "pyannote/speaker-diarization-3.1",
+    model_id: str = "pyannote/speaker-diarization-community-1",
     num_speakers: int | None = None,
     min_speakers: int | None = None,
     max_speakers: int | None = None,

@@ -1,0 +1,13 @@
+v3_rnnt.ckpt
+GigaAM_ASR_CPU.spec
+vvv
+GigaAM_ASR.spec
+/build/
+GigaAM_ASR_GPU.spec
+/models/
+new.txt
+/dist/
+/ffmpeg/
+/.venv/
+/.venv_cpu/
+

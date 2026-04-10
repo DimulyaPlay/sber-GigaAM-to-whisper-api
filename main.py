@@ -38,8 +38,9 @@ CACHE_DIR = BASE / "models"
 os.environ["HF_HOME"] = str(CACHE_DIR / "huggingface")
 os.environ["HF_HUB_CACHE"] = str(CACHE_DIR / "huggingface" / "hub")
 os.environ["HUGGINGFACE_HUB_CACHE"] = str(CACHE_DIR / "huggingface" / "hub")
-os.environ["HF_HUB_OFFLINE"] = "1"
-os.environ["TRANSFORMERS_OFFLINE"] = "1"
+# os.environ["HF_HUB_OFFLINE"] = "1"
+# os.environ["TRANSFORMERS_OFFLINE"] = "1"
+
 
 def detect_cpu_topology() -> tuple[int, int]:
     logical = os.cpu_count() or 1
@@ -322,7 +323,8 @@ def main():
     parser.add_argument("--num-speakers", type=int, default=None, help="Точное число спикеров")
     parser.add_argument("--min-speakers", type=int, default=None, help="Минимум спикеров")
     parser.add_argument("--max-speakers", type=int, default=None, help="Максимум спикеров")
-    parser.add_argument("--debug", action="store_true", help="Сохранять сырые результаты диаризации")
+    parser.add_argument("--debug", action="store_true", help="Сохранять сырые результаты и статистику запуска")
+    parser.add_argument("--no-timestamps", action="store_true", help="Сохранять результат без временных меток")
     parser.add_argument(
         "--use-cores",
         type=str,
@@ -344,6 +346,7 @@ def main():
     import gigaam.onnx_utils
     import pyannote.audio.models
     import pyannote.audio.models.segmentation
+    import pyannote.audio.models.embedding
     import torch
     if cores_to_use is not None:
         try:
@@ -398,6 +401,8 @@ def main():
                 min_speakers=args.min_speakers,
                 max_speakers=args.max_speakers,
             )
+            if device != "cuda":
+                print(f"[WARN] Запущена диаризация аудио, это может занять длительное время")
             if args.debug:
                 debug_diar_raw = p.with_name(p.stem + "_diarization_raw.txt")
                 with debug_diar_raw.open("w", encoding="utf-8") as f:
@@ -444,9 +449,11 @@ def main():
                 start, end = utt["boundaries"]
                 speaker = utt.get("speaker")
                 prefix = f"[{speaker}] " if speaker else ""
-                line = f"{prefix}[{gigaam.format_time(start)} - {gigaam.format_time(end)}]: {transcription}"
+                if args.no_timestamps:
+                    line = f"{prefix}{transcription}"
+                else:
+                    line = f"{prefix}[{gigaam.format_time(start)} - {gigaam.format_time(end)}]: {transcription}"
                 f.write(line + "\n")
-                # прогресс в консоль
                 if dur is not None:
                     pct = min(100.0, (end / dur) * 100.0) if dur > 0 else 0.0
                     print(f"\r[WRITE] {i}/{total}  ~{pct:5.1f}% ({end:6.1f}s/{dur:6.1f}s)", end="", flush=True)
