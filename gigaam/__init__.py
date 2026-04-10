@@ -8,15 +8,11 @@ from typing import Optional, Tuple, Union
 import torch
 from tqdm import tqdm
 
-from .model import GigaAM, GigaAMASR, GigaAMEmo
-from .preprocess import load_audio
+from .model import GigaAMASR
 from .utils import format_time
 
 __all__ = [
-    "GigaAM",
     "GigaAMASR",
-    "GigaAMEmo",
-    "load_audio",
     "format_time",
     "load_model",
 ]
@@ -26,18 +22,14 @@ _CACHE_DIR = os.path.expanduser("~/.cache/gigaam")
 # Url with model checkpoints
 _URL_DIR = "https://cdn.chatwm.opensmodel.sberdevices.ru/GigaAM"
 _MODEL_HASHES = {
-    "emo": "7ce76f9535cb254488985057c0d33006",
     "v1_ctc": "f027f199e590a391d015aeede2e66174",
     "v1_rnnt": "02c758999bcdc6afcb2087ef256d47ef",
-    "v1_ssl": "dc7f7b231f7f91c4968dc21910e7b396",
     "v2_ctc": "e00f59cb5d39624fb30d1786044795bf",
     "v2_rnnt": "547460139acfebd842323f59ed54ab54",
-    "v2_ssl": "cd4cf819c8191a07b9d7edcad111668e",
     "v3_ctc": "73413e7be9c6a5935827bfab5c0dd678",
     "v3_rnnt": "0fd2c9a1ff66abd8d32a3a07f7592815",
     "v3_e2e_ctc": "367074d6498f426d960b25f49531cf68",
     "v3_e2e_rnnt": "2730de7545ac43ad256485a462b0a27a",
-    "v3_ssl": "70cbf5ed7303a0ed242ddb257e9dc6a6",
 }
 
 
@@ -68,7 +60,7 @@ def _download_file(file_url: str, file_path: str):
 
 def _download_model(model_name: str, download_root: str) -> Tuple[str, str]:
     """Download the model weights if not already cached."""
-    short_names = ["ctc", "rnnt", "e2e_ctc", "e2e_rnnt", "ssl"]
+    short_names = ["ctc", "rnnt", "e2e_ctc", "e2e_rnnt"]
     possible_names = short_names + list(_MODEL_HASHES.keys())
     if model_name not in possible_names:
         raise ValueError(
@@ -113,7 +105,7 @@ def load_model(
     use_flash: Optional[bool] = False,
     device: Optional[Union[str, torch.device]] = None,
     download_root: Optional[str] = None,
-) -> Union[GigaAM, GigaAMEmo, GigaAMASR]:
+) -> GigaAMASR:
     """
     Load the GigaAM model by name.
 
@@ -156,12 +148,13 @@ def load_model(
     if tokenizer_path is not None:
         checkpoint["cfg"].decoding.model_path = tokenizer_path
 
-    if "ssl" in model_name:
-        model = GigaAM(checkpoint["cfg"])
-    elif "emo" in model_name:
-        model = GigaAMEmo(checkpoint["cfg"])
-    else:
-        model = GigaAMASR(checkpoint["cfg"])
+    if model_name not in _MODEL_HASHES:
+        raise ValueError(
+            f"Model '{model_name}' is not supported in this build. "
+            "Only ASR models required by main.py are kept."
+        )
+
+    model = GigaAMASR(checkpoint["cfg"])
 
     model.load_state_dict(checkpoint["state_dict"])
     model = model.eval()

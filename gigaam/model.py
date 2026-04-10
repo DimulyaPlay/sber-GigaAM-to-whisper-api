@@ -6,7 +6,6 @@ import torch
 from torch import Tensor, nn
 
 from .preprocess import SAMPLE_RATE, load_audio
-from .utils import onnx_converter
 
 LONGFORM_THRESHOLD = 25 * SAMPLE_RATE
 
@@ -52,32 +51,6 @@ class GigaAM(nn.Module):
         length = torch.full([1], wav.shape[-1], device=self._device)
         return wav, length
 
-    def embed_audio(self, wav_file: str) -> Tuple[Tensor, Tensor]:
-        """
-        Extract audio representations using the GigaAM model.
-        """
-        wav, length = self.prepare_wav(wav_file)
-        encoded, encoded_len = self.forward(wav, length)
-        return encoded, encoded_len
-
-    def to_onnx(self, dir_path: str = ".") -> None:
-        """
-        Export onnx model encoder to the specified dir.
-        """
-        self._to_onnx(dir_path)
-        omegaconf.OmegaConf.save(self.cfg, f"{dir_path}/{self.cfg.model_name}.yaml")
-
-    def _to_onnx(self, dir_path: str = ".") -> None:
-        """
-        Export onnx model encoder to the specified dir.
-        """
-        onnx_converter(
-            model_name=f"{self.cfg.model_name}_encoder",
-            out_dir=dir_path,
-            module=self.encoder,
-            dynamic_axes=self.encoder.dynamic_axes(),
-        )
-
 
 class GigaAMASR(GigaAM):
     """
@@ -114,50 +87,6 @@ class GigaAMASR(GigaAM):
 
         encoded, encoded_len = self.forward(wav, length)
         return self.decoding.decode(self.head, encoded, encoded_len)[0]
-
-    def forward_for_export(self, features: Tensor, feature_lengths: Tensor) -> Tensor:
-        """
-        Encoder-decoder forward to save model entirely in onnx format.
-        """
-        return self.head(self.encoder(features, feature_lengths)[0])
-
-    def _to_onnx(self, dir_path: str = ".") -> None:
-        """
-        Export onnx ASR model.
-        `ctc`:  exported entirely in encoder-decoder format.
-        `rnnt`: exported in encoder/decoder/joint parts separately.
-        """
-        if "ctc" in self.cfg.model_name:
-            saved_forward = self.forward
-            self.forward = self.forward_for_export  # type: ignore[assignment, method-assign]
-            try:
-                onnx_converter(
-                    model_name=self.cfg.model_name,
-                    out_dir=dir_path,
-                    module=self,
-                    inputs=self.encoder.input_example(),
-                    input_names=["features", "feature_lengths"],
-                    output_names=["log_probs"],
-                    dynamic_axes={
-                        "features": {0: "batch_size", 2: "seq_len"},
-                        "feature_lengths": {0: "batch_size"},
-                        "log_probs": {0: "batch_size", 1: "seq_len"},
-                    },
-                )
-            finally:
-                self.forward = saved_forward  # type: ignore[assignment, method-assign]
-        else:
-            super()._to_onnx(dir_path)  # export encoder
-            onnx_converter(
-                model_name=f"{self.cfg.model_name}_decoder",
-                out_dir=dir_path,
-                module=self.head.decoder,
-            )
-            onnx_converter(
-                model_name=f"{self.cfg.model_name}_joint",
-                out_dir=dir_path,
-                module=self.head.joint,
-            )
 
     @torch.inference_mode()
     def transcribe_longform(
@@ -205,60 +134,3 @@ class GigaAMASR(GigaAM):
             print()  # чтобы после \r перейти на новую строку
 
         return transcribed_segments
-
-
-class GigaAMEmo(GigaAM):
-    """
-    Giga Acoustic Model for Emotion Recognition
-    """
-
-    def __init__(self, cfg: omegaconf.DictConfig):
-        super().__init__(cfg)
-        self.head = hydra.utils.instantiate(self.cfg.head)
-        self.id2name = cfg.id2name
-
-    def get_probs(self, wav_file: str) -> Dict[str, float]:
-        """
-        Calculate probabilities for each emotion class based on the provided audio file.
-        """
-        wav, length = self.prepare_wav(wav_file)
-        encoded, _ = self.forward(wav, length)
-        encoded_pooled = nn.functional.avg_pool1d(
-            encoded, kernel_size=encoded.shape[-1]
-        ).squeeze(-1)
-
-        logits = self.head(encoded_pooled)[0]
-        probs = nn.functional.softmax(logits, dim=-1).detach().tolist()
-
-        return {self.id2name[i]: probs[i] for i in range(len(self.id2name))}
-
-    def forward_for_export(self, features: Tensor, feature_lengths: Tensor) -> Tensor:
-        """
-        Encoder-decoder forward to save model entirely in onnx format.
-        """
-        encoded, _ = self.encoder(features, feature_lengths)
-        enc_pooled = encoded.mean(dim=-1)
-        return nn.functional.softmax(self.head(enc_pooled), dim=-1)
-
-    def _to_onnx(self, dir_path: str = ".") -> None:
-        """
-        Export onnx Emo model.
-        """
-        saved_forward = self.forward
-        self.forward = self.forward_for_export  # type: ignore[assignment, method-assign]
-        try:
-            onnx_converter(
-                model_name=self.cfg.model_name,
-                out_dir=dir_path,
-                module=self,
-                inputs=self.encoder.input_example(),
-                input_names=["features", "feature_lengths"],
-                output_names=["probs"],
-                dynamic_axes={
-                    "features": {0: "batch_size", 2: "seq_len"},
-                    "feature_lengths": {0: "batch_size"},
-                    "probs": {0: "batch_size", 1: "seq_len"},
-                },
-            )
-        finally:
-            self.forward = saved_forward  # type: ignore[assignment, method-assign]

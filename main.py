@@ -8,10 +8,13 @@ import time
 import platform
 # .venv_cpu/Scripts/pyinstaller.exe --onedir --noconfirm --clean --name GigaAM_ASR_CPU --add-data "ffmpeg;ffmpeg" --add-data "models;models" --add-data ".venv\Lib\site-packages\pyannote\audio\telemetry\config.yaml;pyannote\audio\telemetry" main.py
 # .venv/Scripts/pyinstaller.exe --onedir --noconfirm --clean --name GigaAM_ASR_GPU --add-data "ffmpeg;ffmpeg" --add-data "models;models" --add-data ".venv\Lib\site-packages\pyannote\audio\telemetry\config.yaml;pyannote\audio\telemetry" main.py
-# 1) Глушим шумный warning ДО импортов, которые тянут pyannote
 warnings.filterwarnings(
     "ignore",
     message=r"(?s).*torchcodec.*",
+)
+warnings.filterwarnings(
+    "ignore",
+    message=r"(?s).*TensorFloat-32 \(TF32\) has been disabled.*",
 )
 def get_runtime_base() -> Path:
     if getattr(sys, "frozen", False):
@@ -343,7 +346,6 @@ def main():
     import gigaam.encoder
     import gigaam.decoder
     import gigaam.decoding
-    import gigaam.onnx_utils
     import pyannote.audio.models
     import pyannote.audio.models.segmentation
     import pyannote.audio.models.embedding
