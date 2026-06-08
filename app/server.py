@@ -3,7 +3,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 import html
+import os
+import subprocess
+import sys
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -11,7 +15,49 @@ from typing import Any
 
 from aiohttp import web
 
-from app.backend import CACHE_DIR, ffprobe_duration_seconds
+
+def get_runtime_base() -> Path:
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        internal = exe_dir / "_internal"
+        return internal if internal.exists() else exe_dir
+    return Path(__file__).resolve().parent.parent
+
+
+BASE = get_runtime_base()
+if str(BASE) not in sys.path:
+    sys.path.insert(0, str(BASE))
+
+FFMPEG_DIR = BASE / "ffmpeg"
+if FFMPEG_DIR.exists():
+    try:
+        os.add_dll_directory(str(FFMPEG_DIR))
+    except Exception:
+        pass
+    os.environ["PATH"] = str(FFMPEG_DIR) + os.pathsep + os.environ.get("PATH", "")
+
+CACHE_DIR = BASE / "models"
+os.environ["HF_HOME"] = str(CACHE_DIR / "huggingface")
+os.environ["HF_HUB_CACHE"] = str(CACHE_DIR / "huggingface" / "hub")
+os.environ["HUGGINGFACE_HUB_CACHE"] = str(CACHE_DIR / "huggingface" / "hub")
+
+
+def ffprobe_duration_seconds(path: str) -> float | None:
+    try:
+        cmd = [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            path,
+        ]
+        out = subprocess.check_output(cmd, stderr=subprocess.STDOUT, text=True).strip()
+        return float(out)
+    except Exception:
+        return None
 
 
 DEFAULT_MODEL = "v3_e2e_rnnt"
@@ -20,18 +66,11 @@ MODEL_ALIASES = {
     "gigaam-v3": DEFAULT_MODEL,
     "whisper-1": DEFAULT_MODEL,
 }
-SUPPORTED_MODELS = (
-    "gigaam",
-    "whisper-1",
-    "v3_e2e_rnnt",
-    "v3_e2e_ctc",
-    "v3_rnnt",
-    "v3_ctc",
-    "v2_rnnt",
-    "v2_ctc",
-    "v1_rnnt",
-    "v1_ctc",
-)
+VISIBLE_MODELS = ("gigaam", "whisper-1", DEFAULT_MODEL)
+
+
+def log(message: str) -> None:
+    print(f"[STT] {message}", flush=True)
 
 
 @dataclass(slots=True)
@@ -74,16 +113,17 @@ class GigaAMTranscriber:
             self._device = "cuda" if self._torch.cuda.is_available() else "cpu"
         else:
             self._device = "cuda" if self._torch.cuda.is_available() else "cpu"
+        log(f"device = {self._device}")
         return self._device
 
     def _normalize_model_name(self, requested_model: str | None) -> str:
         model_name = (requested_model or self.default_model).strip() or self.default_model
-        model_name = MODEL_ALIASES.get(model_name, model_name)
-        if model_name not in SUPPORTED_MODELS:
-            raise ValueError(
-                f"Unsupported model '{requested_model}'. Use one of: {', '.join(SUPPORTED_MODELS)}"
-            )
-        return model_name
+        effective_model = MODEL_ALIASES.get(model_name, self.default_model)
+        if effective_model != model_name:
+            log(f"requested model {model_name!r} mapped to {effective_model}")
+        elif model_name != self.default_model:
+            log(f"requested model {model_name!r} ignored, using {self.default_model}")
+        return effective_model
 
     def _load_model(self, model_name: str) -> Any:
         self._import_runtime()
@@ -92,19 +132,24 @@ class GigaAMTranscriber:
 
         import gigaam
 
+        started = time.perf_counter()
+        log(f"loading model {model_name} from {CACHE_DIR / 'gigaam'}")
         model = gigaam.load_model(
             model_name,
             download_root=str(CACHE_DIR / "gigaam"),
             device=self._resolve_device(),
         )
         self._models[model_name] = model
+        log(f"model {model_name} loaded in {time.perf_counter() - started:.2f}s")
         return model
 
     def transcribe(self, audio_path: Path, requested_model: str | None) -> TranscriptionResult:
         with self._lock:
+            started = time.perf_counter()
             model_name = self._normalize_model_name(requested_model)
             model = self._load_model(model_name)
             duration = ffprobe_duration_seconds(str(audio_path))
+            log(f"transcribing {audio_path.name}, model={model_name}, duration={duration}")
 
             try:
                 if duration is not None and duration <= 25.0:
@@ -119,6 +164,7 @@ class GigaAMTranscriber:
                 segments = _normalize_segments(model.transcribe_longform(str(audio_path)))
                 text = _join_segment_text(segments)
 
+            log(f"transcription done in {time.perf_counter() - started:.2f}s, chars={len(text)}")
             return TranscriptionResult(
                 text=text,
                 segments=segments,
@@ -255,15 +301,22 @@ async def _read_audio_request(request: web.Request) -> tuple[bytes, str, dict[st
 async def create_transcription(request: web.Request) -> web.StreamResponse:
     server_api_key = request.app["server_api_key"]
     if not _has_valid_auth(request, server_api_key):
+        log("auth failed")
         return _json_error("Invalid API key", status=401, code="invalid_api_key")
 
     try:
         audio_bytes, suffix, fields = await _read_audio_request(request)
     except web.HTTPException as exc:
+        log(f"bad request: {exc.status} {exc.text or exc.reason}")
         return _json_error(exc.text or exc.reason, status=exc.status)
 
     requested_model = fields.get("model")
     response_format = fields.get("response_format", "json").lower()
+    log(
+        "audio request: "
+        f"bytes={len(audio_bytes)}, suffix={suffix}, model={requested_model!r}, "
+        f"language={fields.get('language')!r}, response_format={response_format}"
+    )
     if response_format not in {"json", "text", "verbose_json", "srt", "vtt"}:
         return _json_error(
             "Unsupported response_format. Use json, text, verbose_json, srt, or vtt.",
@@ -277,8 +330,10 @@ async def create_transcription(request: web.Request) -> web.StreamResponse:
         try:
             result = await asyncio.to_thread(transcriber.transcribe, audio_path, requested_model)
         except ValueError as exc:
+            log(f"transcription value error: {exc}")
             return _json_error(str(exc), param="model")
         except Exception as exc:
+            log(f"transcription failed: {exc}")
             return _json_error(f"Transcription failed: {exc}", status=500)
 
     if response_format == "text":
@@ -309,9 +364,19 @@ async def list_models(request: web.Request) -> web.Response:
             "created": 0,
             "owned_by": "local-gigaam",
         }
-        for model in SUPPORTED_MODELS
+        for model in VISIBLE_MODELS
     ]
     return web.json_response({"object": "list", "data": models})
+
+
+async def transcription_info(request: web.Request) -> web.Response:
+    return web.json_response(
+        {
+            "status": "ok",
+            "message": "Send POST multipart/form-data with file, model, language, response_format.",
+            "endpoint": "/v1/audio/transcriptions",
+        }
+    )
 
 
 async def health(request: web.Request) -> web.Response:
@@ -335,18 +400,34 @@ async def index(request: web.Request) -> web.Response:
     return web.Response(text=text, content_type="text/html")
 
 
+@web.middleware
+async def access_log_middleware(request: web.Request, handler: Any) -> web.StreamResponse:
+    started = time.perf_counter()
+    log(f"--> {request.method} {request.path_qs} content_type={request.content_type}")
+    try:
+        response = await handler(request)
+        elapsed = (time.perf_counter() - started) * 1000
+        log(f"<-- {request.method} {request.path} {response.status} {elapsed:.1f}ms")
+        return response
+    except Exception as exc:
+        elapsed = (time.perf_counter() - started) * 1000
+        log(f"<-- {request.method} {request.path} error after {elapsed:.1f}ms: {exc}")
+        raise
+
+
 def create_app(
     *,
     model: str = DEFAULT_MODEL,
     device: str = "auto",
     server_api_key: str | None = None,
 ) -> web.Application:
-    app = web.Application(client_max_size=512 * 1024**2)
+    app = web.Application(client_max_size=512 * 1024**2, middlewares=[access_log_middleware])
     app["transcriber"] = GigaAMTranscriber(default_model=model, device=device)
     app["server_api_key"] = server_api_key
     app.router.add_get("/", index)
     app.router.add_get("/health", health)
     app.router.add_get("/v1/models", list_models)
+    app.router.add_get("/v1/audio/transcriptions", transcription_info)
     app.router.add_post("/v1/audio/transcriptions", create_transcription)
     return app
 

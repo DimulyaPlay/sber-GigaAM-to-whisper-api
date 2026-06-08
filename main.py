@@ -3,7 +3,6 @@ from __future__ import annotations
 import sys
 
 from app.cli import build_parser, run_cli
-from app.ui.app import run_gui
 
 
 def main() -> int:
@@ -13,6 +12,8 @@ def main() -> int:
     if cli_mode:
         args = parser.parse_args()
         return run_cli(args)
+
+    from app.ui.app import run_gui
 
     return run_gui()
 

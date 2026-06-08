@@ -3,8 +3,6 @@ from __future__ import annotations
 import argparse
 import sys
 
-from app.backend import AsrService, RunOptions
-
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="GigaAM longform ASR")
@@ -44,6 +42,8 @@ def run_cli(args: argparse.Namespace) -> int:
         device = "cpu"
     elif args.gpu:
         device = "cuda"
+
+    from app.backend import AsrService, RunOptions
 
     options = RunOptions(
         audio_paths=args.audio,
