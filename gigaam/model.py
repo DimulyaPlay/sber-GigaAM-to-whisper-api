@@ -93,23 +93,33 @@ class GigaAMASR(GigaAM):
             self,
             wav_file: str,
             progress=None,  # None | True | callable
+            chunk_duration: float = 24.0,
             **kwargs
     ) -> List[Dict[str, Union[str, Tuple[float, float]]]]:
         """
-        Transcribes a long audio file by splitting it into segments and
-        then transcribing each segment.
+        Transcribes a long audio file by splitting it into fixed-size chunks.
 
         progress:
           - None: без прогресса
           - True: печатать прогресс в stdout
           - callable(i, total, boundaries): вызывать коллбек
         """
-        from .vad_utils import segment_audio_file
-
         transcribed_segments = []
-        segments, boundaries = segment_audio_file(
-            wav_file, SAMPLE_RATE, device=self._device, **kwargs
-        )
+        audio = load_audio(wav_file, sample_rate=SAMPLE_RATE)
+        chunk_samples = int(chunk_duration * SAMPLE_RATE)
+        if chunk_samples <= 0:
+            raise ValueError("chunk_duration must be positive")
+
+        segments = []
+        boundaries = []
+        total_samples = int(audio.shape[0])
+        for start_sample in range(0, total_samples, chunk_samples):
+            end_sample = min(start_sample + chunk_samples, total_samples)
+            segment = audio[start_sample:end_sample]
+            if segment.numel() == 0:
+                continue
+            segments.append(segment)
+            boundaries.append((start_sample / SAMPLE_RATE, end_sample / SAMPLE_RATE))
 
         total = len(segments)
         if progress is True:

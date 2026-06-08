@@ -143,6 +143,45 @@ class GigaAMTranscriber:
         log(f"model {model_name} loaded in {time.perf_counter() - started:.2f}s")
         return model
 
+    def _transcribe_fixed_chunks(
+        self,
+        model: Any,
+        audio_path: Path,
+        duration: float | None,
+        chunk_duration: float = 24.0,
+    ) -> tuple[str, list[dict[str, Any]]]:
+        from gigaam.preprocess import SAMPLE_RATE, load_audio
+
+        audio = load_audio(str(audio_path), sample_rate=SAMPLE_RATE)
+        chunk_samples = int(chunk_duration * SAMPLE_RATE)
+        if chunk_samples <= 0:
+            raise ValueError("chunk_duration must be positive")
+
+        segments: list[dict[str, Any]] = []
+        total_samples = int(audio.shape[0])
+        for index, start_sample in enumerate(range(0, total_samples, chunk_samples)):
+            end_sample = min(start_sample + chunk_samples, total_samples)
+            chunk = audio[start_sample:end_sample]
+            if chunk.numel() == 0:
+                continue
+
+            start_sec = start_sample / SAMPLE_RATE
+            end_sec = end_sample / SAMPLE_RATE
+            log(f"chunk {index + 1}: {start_sec:.2f}-{end_sec:.2f}s")
+            text = model.transcribe_tensor(chunk).strip()
+            segments.append(
+                {
+                    "id": index,
+                    "start": start_sec,
+                    "end": end_sec,
+                    "text": text,
+                }
+            )
+
+        if not segments and duration is not None:
+            segments.append({"id": 0, "start": 0.0, "end": duration, "text": ""})
+        return _join_segment_text(segments), segments
+
     def transcribe(self, audio_path: Path, requested_model: str | None) -> TranscriptionResult:
         with self._lock:
             started = time.perf_counter()
@@ -156,13 +195,11 @@ class GigaAMTranscriber:
                     text = model.transcribe(str(audio_path)).strip()
                     segments = [{"id": 0, "start": 0.0, "end": duration, "text": text}]
                 else:
-                    segments = _normalize_segments(model.transcribe_longform(str(audio_path)))
-                    text = _join_segment_text(segments)
+                    text, segments = self._transcribe_fixed_chunks(model, audio_path, duration)
             except ValueError as exc:
                 if "Too long wav file" not in str(exc):
                     raise
-                segments = _normalize_segments(model.transcribe_longform(str(audio_path)))
-                text = _join_segment_text(segments)
+                text, segments = self._transcribe_fixed_chunks(model, audio_path, duration)
 
             log(f"transcription done in {time.perf_counter() - started:.2f}s, chars={len(text)}")
             return TranscriptionResult(
